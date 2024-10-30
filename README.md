@@ -1,2 +1,3 @@
 # Elastodynamics
-# Elastodynamics
+
+Elastodynamics in FEniCSx
