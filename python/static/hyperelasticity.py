@@ -6,7 +6,7 @@ import ufl
 import matplotlib.pyplot as plt
 
 from mpi4py import MPI
-from dolfinx import fem, io, nls
+from dolfinx import fem, io, nls, mesh, default_scalar_type, log
 import dolfinx.fem.petsc
 import dolfinx.nls.petsc
 from dolfinx.mesh import create_box, CellType
@@ -26,23 +26,34 @@ from ufl import (
     TestFunction,
     TrialFunction,
     inner,
+    FacetNormal
 )
+from dolfinx.io.gmshio import read_from_msh
+import gmsh
 
-L = 3.0
-N = 4
-mesh = create_box(
-    MPI.COMM_WORLD,
-    [[-0.5, -0.5, 0.0], [0.5, 0.5, L]],
-    [N, N, 4 * N],
-    CellType.hexahedron,
-)
 
-dim = mesh.topology.dim
+gdim = 3  # domain geometry dimension
+fdim = 2  # facets dimension
+
+mesh_comm = MPI.COMM_WORLD
+model_rank = 0
+
+h = 50.0
+w = 100/2
+l = 100/2
+
+domain = mesh.create_box(MPI.COMM_WORLD, [np.array([0, 0, 0]), np.array([w, l, h])],
+                         [4, 4, 4], cell_type=mesh.CellType.hexahedron)
+
+
+
+dim = domain.topology.dim
+
 print(f"Mesh topology dimension d={dim}.")
 
 degree = 1
 shape = (dim,)
-V = fem.functionspace(mesh, ("P", degree, shape))
+V = fem.functionspace(domain, ("P", degree, shape))
 
 u = fem.Function(V, name="Displacement")
 
@@ -62,8 +73,13 @@ E_GL = variable(0.5*(C-Id))
 # Shear modulus
 E = 1e4
 nu = 0.4
-mu = fem.Constant(mesh, E / 2 / (1 + nu))
-lmbda = fem.Constant(mesh, E * nu / (1 - 2 * nu) / (1 + nu))
+#mu = fem.Constant(domain, E / 2 / (1 + nu))
+#lmbda = fem.Constant(domain, E * nu / (1 - 2 * nu) / (1 + nu))
+
+lmbda = fem.Constant(domain, 499.92568)
+mu = fem.Constant(domain, 1.61148)
+
+q = 3.0
 
 # Stored strain energy density (compressible neo-Hookean model)
 psi = mu / 2 * (I1 - 3 - 2 * ln(J)) + lmbda / 2 * (J - 1) ** 2
@@ -73,62 +89,100 @@ psi = mu / 2 * (I1 - 3 - 2 * ln(J)) + lmbda / 2 * (J - 1) ** 2
 
 # PK1 stress = d_psi/d_F
 P = ufl.diff(psi, F)
-#print(P)
+
 
 def bottom(x):
-    return np.isclose(x[2], 0.0)
-
+    return np.isclose(x[2], 0)
 
 def top(x):
-    return np.isclose(x[2], L)
+    return np.isclose(x[2], h)
 
+def right(x):
+    return np.isclose(x[0], w)
 
-bottom_dofs = fem.locate_dofs_geometrical(V, bottom)
-top_dofs = fem.locate_dofs_geometrical(V, top)
+def back(x):
+    return np.isclose(x[1], l)
 
-u_bot = fem.Function(V)
-u_top = fem.Function(V)
+def load_surface(x):
+    return np.logical_and(np.logical_and(x[0] >= w/2, x[1] >= l/2), np.isclose(x[2],  h))
 
-bcs = [fem.dirichletbc(u_bot, bottom_dofs), fem.dirichletbc(u_top, top_dofs)]
+load_facets = mesh.locate_entities_boundary(
+    domain, fdim, load_surface)
 
-x = SpatialCoordinate(mesh)
-theta = fem.Constant(mesh, 0.0)
-Rot = as_matrix([[cos(theta), sin(theta), 0], [-sin(theta), cos(theta), 0], [0, 0, 1]])
-print(Rot)
-rotation_displ = dot(Rot, x) - x
-rot_expr = fem.Expression(rotation_displ, V.element.interpolation_points())
+#add tags to facets for the load surface
+marked_facets = np.hstack([load_facets])
+marked_values = np.hstack([np.full_like(load_facets, 1)])
+sorted_facets = np.argsort(marked_facets)
+facet_tag = mesh.meshtags(domain, fdim, marked_facets[sorted_facets], marked_values[sorted_facets])
 
-dx = ufl.Measure("dx", domain=mesh, metadata={"quadrature_degree": 4})
-E_pot = psi * dx
+#locate facets 
+bottom_facets = mesh.locate_entities_boundary(
+    domain, fdim, bottom)
+
+top_facets = mesh.locate_entities_boundary(
+    domain, fdim, top)
+
+right_facets = mesh.locate_entities_boundary(
+    domain, fdim, right)
+
+back_facets = mesh.locate_entities_boundary(
+    domain, fdim, back)
+
+#Identify dof subcomponents  
+bottom_dofs_z = fem.locate_dofs_topological(V.sub(2), fdim, bottom_facets)
+top_dofs_u = fem.locate_dofs_topological(V.sub(0), fdim, top_facets)
+top_dofs_v = fem.locate_dofs_topological(V.sub(1), fdim, top_facets)
+right_dofs_u = fem.locate_dofs_topological(V.sub(0), fdim, top_facets)
+back_dofs_v = fem.locate_dofs_topological(V.sub(1), fdim, back_facets)
+
+#Boundary conditions
+bcs = [
+    fem.dirichletbc(default_scalar_type(0), bottom_dofs_z, V.sub(2)),
+    fem.dirichletbc(default_scalar_type(0), top_dofs_u, V.sub(0)),
+    fem.dirichletbc(default_scalar_type(0), top_dofs_v, V.sub(1)),
+    #Symmetry conditions
+    fem.dirichletbc(default_scalar_type(0), right_dofs_u, V.sub(0)),
+    fem.dirichletbc(default_scalar_type(0), back_dofs_v, V.sub(1))
+]
+
+dx = ufl.Measure("dx", domain=domain, metadata={"quadrature_degree": 2})
+ds = ufl.Measure("ds", domain=domain, subdomain_data=facet_tag)
 
 v = TestFunction(V)
 du = TrialFunction(V)
+
+#E_pot = psi * dx
+
 # Residual = derivative(
 #     E_pot, u, v
 # )  # This is equivalent to Residual = inner(P, grad(v))*dx
 
-Residual = inner(P, grad(v))*dx
+T = fem.Constant(domain, q)
+n = FacetNormal(domain)
+Load = dot(T * n, v) * ds(1)
+
+Residual = inner(P, grad(v))*dx + Load
 Jacobian = derivative(Residual, u, du)
 
 problem = fem.petsc.NonlinearProblem(Residual, u, bcs)
 
-solver = nls.petsc.NewtonSolver(mesh.comm, problem)
+solver = nls.petsc.NewtonSolver(domain.comm, problem)
 # Set Newton solver options
 solver.atol = 1e-4
 solver.rtol = 1e-4
+solver.ksp_type = "preonly"
+solver.pc_type = "lu"
+
 solver.convergence_criterion = "incremental"
 
-angle_max = 2 * np.pi
-Nsteps = 30
-
 out_file = "hyperelasticity.xdmf"
-with io.XDMFFile(mesh.comm, out_file, "w") as xdmf:
-    xdmf.write_mesh(mesh)
+with io.XDMFFile(domain.comm, out_file, "w") as xdmf:
+    xdmf.write_mesh(domain)
 
 u.vector.set(0.0)
 
 def sigma(v):
-    return lmbda * ufl.tr(grad(v)) * ufl.Identity(dim) + 2 * mu * grad(v)
+    return 1/J*F*P
 
 
 def stiffness(u, u_):
@@ -136,37 +190,22 @@ def stiffness(u, u_):
 
 E_el = fem.form(0.5 * stiffness(u, u))
 
-energies = np.zeros((Nsteps + 1, 1))
-#E_el = fem.form(0.5 * Residual)
+log.set_log_level(log.LogLevel.INFO)
 
-angle_steps = np.linspace(0, angle_max, int(Nsteps/2) + 1)[1:]
-angle_steps = np.concatenate((angle_steps, np.flip(angle_steps)))
-print(angle_steps)
+num_its, converged = solver.solve(u)
+assert converged
 
+u.x.scatter_forward()  # updates ghost values for parallel computations
 
-for n, angle in enumerate(angle_steps):
-    theta.value = angle
-    u_top.interpolate(rot_expr)
-    
-    num_its, converged = solver.solve(u)
-    assert converged
+s = sigma(u) - 1. / 3 * ufl.tr(sigma(u)) * ufl.Identity(len(u))
+von_Mises = ufl.sqrt(3. / 2 * ufl.inner(s, s))
 
-    u.x.scatter_forward()  # updates ghost values for parallel computations
+V_von_mises = fem.functionspace(domain, ("DG", 0))
+stress_expr = fem.Expression(von_Mises, V_von_mises.element.interpolation_points())
+stresses = fem.Function(V_von_mises, name="Stress")
+stresses.interpolate(stress_expr)
 
-    energies[n + 1, 0] = fem.assemble_scalar(E_el)
-
-    print(
-        f"Time step {n}, Number of iterations {num_its}, Angle {angle*180/np.pi:.0f} deg."
-    )
-
-    with io.XDMFFile(mesh.comm, out_file, "a") as xdmf:
-        xdmf.write_function(u, n + 1)
-
-
-times = np.linspace(0, 2, Nsteps + 1)
-plt.plot(times, energies[:, 0], label="Elastic")
-plt.plot(times, np.sum(energies, axis=1), label="Total")
-plt.legend()
-plt.xlabel("Time")
-plt.ylabel("Energies")
-plt.show()
+vtk = io.VTKFile(domain.comm, "hyperelasticity.pvd", "w")
+vtk.write_function(u, 0)
+vtk.write_function(stresses, 0)
+vtk.close()
