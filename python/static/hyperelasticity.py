@@ -42,8 +42,9 @@ h = 50.0
 w = 100/2
 l = 100/2
 
+N_ele = 4
 domain = mesh.create_box(MPI.COMM_WORLD, [np.array([0, 0, 0]), np.array([w, l, h])],
-                         [4, 4, 4], cell_type=mesh.CellType.hexahedron)
+                         [N_ele, N_ele, N_ele], cell_type=mesh.CellType.hexahedron)
 
 
 
@@ -51,7 +52,8 @@ dim = domain.topology.dim
 
 print(f"Mesh topology dimension d={dim}.")
 
-degree = 1
+degree = 2
+quadrature_degree = 6#degree-1
 shape = (dim,)
 V = fem.functionspace(domain, ("P", degree, shape))
 
@@ -97,10 +99,10 @@ def bottom(x):
 def top(x):
     return np.isclose(x[2], h)
 
-def right(x):
+def back(x):
     return np.isclose(x[0], w)
 
-def back(x):
+def right(x):
     return np.isclose(x[1], l)
 
 def load_surface(x):
@@ -132,8 +134,9 @@ back_facets = mesh.locate_entities_boundary(
 bottom_dofs_z = fem.locate_dofs_topological(V.sub(2), fdim, bottom_facets)
 top_dofs_u = fem.locate_dofs_topological(V.sub(0), fdim, top_facets)
 top_dofs_v = fem.locate_dofs_topological(V.sub(1), fdim, top_facets)
-right_dofs_u = fem.locate_dofs_topological(V.sub(0), fdim, top_facets)
-back_dofs_v = fem.locate_dofs_topological(V.sub(1), fdim, back_facets)
+back_dofs_u = fem.locate_dofs_topological(V.sub(0), fdim, back_facets)
+right_dofs_v = fem.locate_dofs_topological(V.sub(1), fdim, top_facets)
+
 
 #Boundary conditions
 bcs = [
@@ -141,11 +144,11 @@ bcs = [
     fem.dirichletbc(default_scalar_type(0), top_dofs_u, V.sub(0)),
     fem.dirichletbc(default_scalar_type(0), top_dofs_v, V.sub(1)),
     #Symmetry conditions
-    fem.dirichletbc(default_scalar_type(0), right_dofs_u, V.sub(0)),
-    fem.dirichletbc(default_scalar_type(0), back_dofs_v, V.sub(1))
+    fem.dirichletbc(default_scalar_type(0), back_dofs_u, V.sub(0)),
+    fem.dirichletbc(default_scalar_type(0), right_dofs_v, V.sub(1))    
 ]
 
-dx = ufl.Measure("dx", domain=domain, metadata={"quadrature_degree": 2})
+dx = ufl.Measure("dx", domain=domain, metadata={"quadrature_degree": quadrature_degree})
 ds = ufl.Measure("ds", domain=domain, subdomain_data=facet_tag)
 
 v = TestFunction(V)
@@ -179,7 +182,8 @@ out_file = "hyperelasticity.xdmf"
 with io.XDMFFile(domain.comm, out_file, "w") as xdmf:
     xdmf.write_mesh(domain)
 
-u.vector.set(0.0)
+#u.vector.set(0.0)
+u.x.array[:] = 0.0
 
 def sigma(v):
     return 1/J*F*P
@@ -190,12 +194,29 @@ def stiffness(u, u_):
 
 E_el = fem.form(0.5 * stiffness(u, u))
 
-log.set_log_level(log.LogLevel.INFO)
+#log.set_log_level(log.LogLevel.INFO)
 
-num_its, converged = solver.solve(u)
-assert converged
+Nsteps = 500
+times = np.linspace(0, 1, Nsteps + 1)
+def custom_spacing(n, end):
+    x = np.linspace(0, end, n)
+    return np.tanh(x)
+times = custom_spacing(Nsteps+1, 3)
+t = 0.0
+vtk = io.VTKFile(domain.comm, "hyperelasticity.pvd", "w")
 
-u.x.scatter_forward()  # updates ghost values for parallel computations
+for i, dti in enumerate(np.diff(times)):
+    t +=dti
+    print(f'current time {t}')
+    T.value = q*t
+    num_its, converged = solver.solve(u)
+    assert converged
+
+    u.x.scatter_forward()  # updates ghost values for parallel computations
+
+    vtk.write_function(u, t)
+    
+
 
 s = sigma(u) - 1. / 3 * ufl.tr(sigma(u)) * ufl.Identity(len(u))
 von_Mises = ufl.sqrt(3. / 2 * ufl.inner(s, s))
@@ -205,7 +226,6 @@ stress_expr = fem.Expression(von_Mises, V_von_mises.element.interpolation_points
 stresses = fem.Function(V_von_mises, name="Stress")
 stresses.interpolate(stress_expr)
 
-vtk = io.VTKFile(domain.comm, "hyperelasticity.pvd", "w")
-vtk.write_function(u, 0)
-vtk.write_function(stresses, 0)
+
+vtk.write_function(stresses, t)
 vtk.close()
