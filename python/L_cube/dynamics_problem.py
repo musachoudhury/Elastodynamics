@@ -39,9 +39,6 @@ V = fem.functionspace(domain, ("Lagrange", degree, shape))
 
 u = fem.Function(V, name="Displacement")
 
-# vtktest = io.VTKFile(domain.comm, "test/test.pvd", "w")
-# vtktest.write_function(u, 0)
-
 # %%
 
 #bcs = [fem.dirichletbc(np.zeros((dim,)), clamped_dofs, V)]
@@ -79,12 +76,10 @@ v_expr = fem.Expression(v, V.element.interpolation_points())
 
 u_ = ufl.TestFunction(V)
 du = ufl.TrialFunction(V)
-# %%
 
 ds = ufl.Measure("ds", domain=domain, subdomain_data=facet_tags)
 MA_Z = utils.moment_traction(Ma_z, 2, [w2/2 , l/2, h], domain, gdim, V, facet_tags , 3)
 MB_X = utils.moment_traction(Mb_x, 0, [w , l/2, h2/2], domain, gdim, V, facet_tags, 8)
-
 loadA = ufl.dot((tractionA+MA_Z)*P, u_) * ds(3)
 loadB = ufl.dot((tractionB+MB_X)*P, u_) * ds(8)
 Residual = mechanics.mass(a, u_) + mechanics.damping(v, u_) + mechanics.stiffness(u, u_) - ufl.dot(f, u_) * ufl.dx - loadA - loadB
@@ -167,13 +162,11 @@ for i, dti in enumerate(np.diff(times)):
     clear_output(wait=True)
     print(f"Time: {t}, Time increment {i+1}/{Nsteps}")
 
-
 vtk.close()
 
 cmap = plt.get_cmap("plasma")
 colors = cmap(times / max(times))
 
-#%%
 plt.figure(1)
 plt.plot(times, energies[:, 0], label="Elastic", marker='o')
 plt.plot(times, energies[:, 1], label="Kinetic", marker="x")
