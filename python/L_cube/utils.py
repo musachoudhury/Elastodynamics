@@ -38,10 +38,16 @@ def moment_traction(M, axis, centre, domain, gdim, V, facet_tags, tag):
     tang_vect = unit_tangent_vector(axis, centre, gdim, 1.0)
     space_varying_func = fem.Function(V)
     space_varying_func.interpolate(tang_vect)
+    alpha = 1.0
+    exists = np.isin(tag, facet_tags.values)
     x = ufl.SpatialCoordinate(domain)
     ds = ufl.Measure("ds", domain=domain, subdomain_data=facet_tags)
     M_unit = fem.assemble_scalar(fem.form(ufl.cross(x, space_varying_func)[axis] * ds(tag)))
-    alpha = M/M_unit
+    
+    if exists:
+        #print(M_unit)
+        alpha = M/M_unit
+    #print(exists)
     return alpha*space_varying_func
 
 
@@ -67,3 +73,6 @@ def print_forces(traction, domain, tags, id):
     print("**************************************")
 
     return [F_x, F_y, F_z]
+
+def Functions(V):
+    return fem.Function(V), fem.Function(V)
