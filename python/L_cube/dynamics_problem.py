@@ -43,7 +43,7 @@ u = fem.Function(V, name="Displacement")
 
 #bcs = [fem.dirichletbc(np.zeros((dim,)), clamped_dofs, V)]
 bcs = []
-mechanics = defs.mechanics(domain, [210e3, 0.3, 7850.0])
+mechanics = defs.mechanics(domain, [210e3, 0.3, 785.0])
 
 E, nu, rho, lmbda, mu = mechanics.material_properties()
 
@@ -106,7 +106,7 @@ vtk = io.VTKFile(domain.comm, "results/elastodynamics.pvd", "w")
 
 t = 0.0
 
-Nsteps = 10000
+Nsteps = 1000
 #Nsave = 1000
 times = np.linspace(0, 100, Nsteps + 1)
 #save_freq = Nsteps // Nsave
@@ -168,8 +168,8 @@ cmap = plt.get_cmap("plasma")
 colors = cmap(times / max(times))
 
 plt.figure(1)
-plt.plot(times, energies[:, 0], label="Elastic", marker='o')
-plt.plot(times, energies[:, 1], label="Kinetic", marker="x")
+plt.plot(times, energies[:, 0], label="Elastic")
+plt.plot(times, energies[:, 1], label="Kinetic")
 plt.plot(times, energies[:, 2], label="Damping")
 plt.plot(times, np.sum(energies, axis=1), label="Total")
 plt.legend()
@@ -177,8 +177,8 @@ plt.xlabel("Time")
 plt.ylabel("Energies")
 
 plt.figure(2)
-plt.plot(times, angular_mom[:, 0], label="Component 1", marker='o')
-plt.plot(times, angular_mom[:, 1], label="Component 2", marker="x")
+plt.plot(times, angular_mom[:, 0], label="Component 1")
+plt.plot(times, angular_mom[:, 1], label="Component 2")
 plt.plot(times, angular_mom[:, 2], label="Component 3")
 plt.legend()
 plt.xlabel("Time")
