@@ -41,8 +41,10 @@ class mechanics:
         self.domain = domain
         self.dim = self.domain.topology.dim
         
-        self.eta_M = fem.Constant(domain, 1e-2)
-        self.eta_K = fem.Constant(domain, 1e-2)
+        self.eta_M = fem.Constant(domain, x[3])
+        self.eta_K = fem.Constant(domain, x[4])
+
+
 
     def material_properties(self):
         return self.E, self.nu, self.rho, self.lmbda, self.mu
@@ -64,10 +66,29 @@ class mechanics:
         return self.rho * ufl.dot(u, u_) * ufl.dx
     
     def stiffness(self, u, u_):
-        return ufl.inner(self.sigma(u), self.epsilon(u_)) * ufl.dx
+        Id = ufl.Identity(self.dim)
+
+        # Deformation gradient
+        F = ufl.variable(Id + ufl.grad(u))
+
+        # Right Cauchy-Green tensor
+        C = F.T * F
+
+        # Invariants of deformation tensors
+        I1 = ufl.tr(C)
+        J = ufl.det(F)
+        E_GL = ufl.variable(0.5*(C-Id))
+
+        #psi = mu / 2 * (I1 - 3 - 2 * ufl.ln(J)) + lmbda / 2 * (J - 1) ** 2
+        psi = self.lmbda/2 * ufl.tr(E_GL)**2 + self.mu * ufl.tr(E_GL*E_GL)
+
+        # PK1 stress = d_psi/d_F
+        P = ufl.diff(psi, F)
+        return ufl.inner(P, ufl.grad(u_)) * ufl.dx 
+        #return ufl.inner(self.sigma(u), self.epsilon(u_)) * ufl.dx
     
     def damping(self, u, u_):
-        return 0.0*self.eta_M * self.mass(u, u_) + 0.0*self.eta_K * self.stiffness(u, u_)
+        return self.eta_M * self.mass(u, u_) + self.eta_K * self.stiffness(u, u_)
 
 
 
