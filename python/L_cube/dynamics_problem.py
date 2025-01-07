@@ -14,6 +14,7 @@ from dolfinx import fem, io, mesh
 import gmsh
 from dolfinx.io.gmshio import read_from_msh
 import dolfinx.fem.petsc
+from dolfinx.nls.petsc import NewtonSolver
 import utils
 import definitions as defs
 gdim = 3  # domain geometry dimension
@@ -43,10 +44,10 @@ u = fem.Function(V, name="Displacement")
 
 #bcs = [fem.dirichletbc(np.zeros((dim,)), clamped_dofs, V)]
 bcs = []
-mechanics = defs.mechanics(domain, [210e3, 0.3, 785.0])
+mechanics = defs.mechanics(domain, [3e3, 0.3, 70.0, 1e-4, 1e-4])
 
 E, nu, rho, lmbda, mu = mechanics.material_properties()
-
+# %%
 f = fem.Constant(domain, (0.0,) * dim)
 P = fem.Constant(domain, (0.0))
 
@@ -85,13 +86,14 @@ loadB = ufl.dot((tractionB+MB_X)*P, u_) * ds(8)
 Residual = mechanics.mass(a, u_) + mechanics.damping(v, u_) + mechanics.stiffness(u, u_) - ufl.dot(f, u_) * ufl.dx - loadA - loadB
 
 #%%
-Residual_du = ufl.replace(Residual, {u: du})
-a_form = ufl.lhs(Residual_du)
-L_form = ufl.rhs(Residual_du)
+# Residual_du = ufl.replace(Residual, {u: du})
+# a_form = ufl.lhs(Residual_du)
+# L_form = ufl.rhs(Residual_du)
 
-problem = fem.petsc.LinearProblem(
-    a_form, L_form, u=u, bcs=bcs, petsc_options={"ksp_type": "preonly", "pc_type": "lu"}
-)
+# problem = fem.petsc.LinearProblem(
+#     a_form, L_form, u=u, bcs=bcs, petsc_options={"ksp_type": "preonly", "pc_type": "lu"}
+# )
+problem = fem.petsc.NonlinearProblem(Residual, u, bcs)
 
 E_kin = fem.form(0.5 * mechanics.mass(v_old, v_old))
 E_el = fem.form(0.5 * mechanics.stiffness(u_old, u_old))
@@ -116,6 +118,13 @@ tip_displacement = np.zeros((Nsteps + 1, 3))
 
 f.value = np.array([0.0, 0.0, 0.0])
 
+solver = NewtonSolver(domain.comm, problem)
+
+# Set Newton solver options
+solver.atol = 1e-8
+solver.rtol = 1e-8
+solver.convergence_criterion = "incremental"
+
 for i, dti in enumerate(np.diff(times)):
     if i % 10 == 0:
         vtk.write_function(u, t)
@@ -131,7 +140,8 @@ for i, dti in enumerate(np.diff(times)):
         P.value = 0.0
     print(t)
 
-    problem.solve()
+    #problem.solve()
+    num_its, converged = solver.solve(u)
 
     u.x.scatter_forward()  # updates ghost values for parallel computations
 
